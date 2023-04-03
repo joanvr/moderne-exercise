@@ -8,11 +8,13 @@ import org.openrewrite.Recipe;
 import org.openrewrite.Tree;
 import org.openrewrite.internal.ListUtils;
 import org.openrewrite.java.JavaIsoVisitor;
+import org.openrewrite.java.MethodMatcher;
 import org.openrewrite.java.TreeVisitingPrinter;
 import org.openrewrite.java.tree.*;
 import org.openrewrite.marker.Markers;
 
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
@@ -30,12 +32,11 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
     @Override
     public JavaIsoVisitor<ExecutionContext> getVisitor() {
         return new JavaIsoVisitor<ExecutionContext>() {
-            @Override
-            public J.CompilationUnit visitCompilationUnit(J.CompilationUnit cu, ExecutionContext executionContext) {
-                // TODO: remove the debug
-                System.out.println(TreeVisitingPrinter.printTree(getCursor()));
-                return super.visitCompilationUnit(cu, executionContext);
-            }
+            private final List<MethodMatcher> serializableMethods = List.of(
+                    new MethodMatcher("* writeObject(java.io.ObjectOutputStream)"),
+                    new MethodMatcher("* readObject(java.io.ObjectInputStream)"),
+                    new MethodMatcher("* readObjectNoData()")
+            );
 
             @Override
             public J.MethodDeclaration visitMethodDeclaration(J.MethodDeclaration methodDec, ExecutionContext executionContext) {
@@ -56,6 +57,18 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
                         methodDeclaration.hasModifier(J.Modifier.Type.Final))) {
                     return methodDeclaration;
                 }
+
+                // We need to check for the exceptions of java.io.Serializable methods
+                JavaType.Method method = methodDeclaration.getMethodType();
+                if (method != null) {
+                    List<JavaType.FullyQualified> interfaces = method.getDeclaringType().getInterfaces();
+                    if (interfaces.stream().anyMatch(i -> i.getFullyQualifiedName().equals("java.io.Serializable")) &&
+                        serializableMethods.stream().anyMatch(matcher -> matcher.matches(method))
+                    ) {
+                        return methodDeclaration;
+                    }
+                }
+
 
                 // At this point we have to check if the body of the method has any access to instance data.
                 // We should always have a body, since private or final methods cannot be abstract, so no need to check that

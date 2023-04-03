@@ -212,6 +212,30 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipeTest implements Re
             }
 
             @Test
+            void instanceAccessWrite() {
+                rewriteRun(java("""
+                        class A {
+                            int a = 0;
+                            private void test() {
+                                a = 42;
+                            }      
+                        }      
+                        """));
+            }
+
+            @Test
+            void instanceAccessThisWrite() {
+                rewriteRun(java("""
+                        class A {
+                            int a = 0;
+                            private void test() {
+                                this.a = 42;
+                            }      
+                        }      
+                        """));
+            }
+
+            @Test
             void instanceMethodAccessInExpression() {
                 rewriteRun(java("""
                         class A {
@@ -336,7 +360,7 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipeTest implements Re
         }
 
         @Nested
-        class anonymousClass {
+        class AnonymousClass {
             @Test
             void publicMethodInAnonymousClassFromInterface() {
                 rewriteRun(java("""
@@ -401,6 +425,24 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipeTest implements Re
             }
         }
 
+        @Nested
+        class SerializableException {
+            @Test
+            void methodsException() {
+                rewriteRun(java("""
+                        class A implements java.io.Serializable {
+                            private void writeObject(java.io.ObjectOutputStream out) throws java.io.IOException {
+                            }
+                            
+                            private void readObject(java.io.ObjectInputStream in) throws java.io.IOException, java.lang.ClassNotFoundException {
+                            }
+                            
+                            private void readObjectNoData() throws java.io.ObjectStreamException {
+                            }
+                        }
+                        """));
+            }
+        }
         @Nested
         class Limitations {
             @Test
