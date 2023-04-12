@@ -59,15 +59,13 @@ classes, where the parent class is an interface. By definition, nested interface
 nested classes). In general, interfaces only define public method signatures; an interface that implementing 
 classes have to implement. However, since Java 8 they can also have default and static method implementations, 
 but neither of those cannot have access to instance data of the enclosing or implementing class.
+- Method references that do not use `this::` are safe, because they are referring to the method either with static
+context or to a local parameter or variable. We also need to care about the special case where `::new` is being
+referenced, and treat it as instantiation of nested classes.
 
-There are some other scenarios where we could apply our recipe, but we decided to add them as limitations, to
-avoid over-complexity on the analysis of the code:
-- Recursive or cross-recursion method calls. If our method only calls itself, we could turn the method `static`,
-and then this method call would be valid, since it would no longer belong to instance methods. However, there
-are other scenarios (specifically with cross-recursion) where this is not that obvious, and we would need to
-build a graph of usages. Then, we decided to exclude this from our recipe, and we would apply the principle of
-"do no harm".
-
+Method Invocations of non-static private or final methods, are kinda tricky, because those can potentially become
+static due to the recipe, but they might not if they have any instance access. We will need to take care of those
+in a particular way if we want to be able to support recursive calls, cross-recursive or chained method calls.
 
 ## Writing Tests
 
@@ -88,15 +86,25 @@ Please, check the test file to find all the implemented tests.
 With the tests created, it's now time to create the recipe.
 
 First we will have a visitor that selects the methods on which we can potentially apply the recipe:
-non-overridable methods.
+non-overridable methods. 
 
 Later on, we will invoke a second visitor on the body of those methods, to try to find any instance data
 access. This second visitor will (mostly) analyze identifiers. 
 
-On this second visitor, we decided to implement visitIdentifier, visitMethodInvocation and visitNewClass,
+On this second visitor, we decided to implement visitIdentifier, visitMethodInvocation, visitNewClass and visitMethodReference,
 instead of using only visitIdentifier and navigating the LST with cursors from there. This way 
 we have shorter methods, less nested conditionals, and easier to understand and follow code. 
 I truly believe it produces a neater approach.
+
+There is a special scenario, regarding method invocations that we need to consider: Invocations to non-static, 
+private or final methods, are on the limbo. Those calls are actually instance access, but due to the recipe, 
+some of those methods can become static, and thus not be a problem. That's the reason why this second visitor, 
+will also store all those invocations in the returned data, so we can analise them in a global way on our first visitor,
+instead of trying to solve them on the scope of each method.
+
+Later on, on the first visitor, we will check all potential to become static methods, if all of their calls to
+private or final methods are actually on the list of methods to turn static. Otherwise, we will remove them from
+the list of potential candidates, and iterate again until we are done.
 
 Please, take a look at the source code of the recipe for further details. I added a lot of comments to
 make it easier to understand my approach and the line of thought of the solution.

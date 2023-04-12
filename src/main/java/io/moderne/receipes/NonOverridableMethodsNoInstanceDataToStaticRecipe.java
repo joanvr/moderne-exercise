@@ -9,13 +9,14 @@ import org.openrewrite.Tree;
 import org.openrewrite.internal.ListUtils;
 import org.openrewrite.java.JavaIsoVisitor;
 import org.openrewrite.java.MethodMatcher;
-import org.openrewrite.java.TreeVisitingPrinter;
 import org.openrewrite.java.tree.*;
 import org.openrewrite.marker.Markers;
 
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
 
@@ -32,47 +33,129 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
     @Override
     public JavaIsoVisitor<ExecutionContext> getVisitor() {
         return new JavaIsoVisitor<ExecutionContext>() {
-            private final List<MethodMatcher> serializableMethods = List.of(
+            private static final List<MethodMatcher> serializableMethods = List.of(
                     new MethodMatcher("* writeObject(java.io.ObjectOutputStream)"),
                     new MethodMatcher("* readObject(java.io.ObjectInputStream)"),
                     new MethodMatcher("* readObjectNoData()")
             );
 
+
+            private Set<JavaType.Method> methodsToBeStatic = new HashSet<>();
+
+            // Helper class to hold together the method type and it's instance access data in a stream.
+            static class MethodWithInstanceAccess {
+                public MethodWithInstanceAccess(JavaType.Method method, InstanceAccess instanceAccess) {
+                    this.method = method;
+                    this.instanceAccess = instanceAccess;
+                }
+                public final JavaType.Method method;
+                public final InstanceAccess instanceAccess;
+            }
+            @Override
+            public J.ClassDeclaration visitClassDeclaration(J.ClassDeclaration classDecl, ExecutionContext executionContext) {
+                List<J.MethodDeclaration> methods = collectNonOverridableMethods(classDecl.getBody());
+
+                List<MethodWithInstanceAccess> noInstanceAccess =
+                        enrichAndFilterWithNoInstanceAccess(methods);
+
+                List<JavaType.Method> toModify =
+                        filterNonStaticMethodInvocations(noInstanceAccess, this.methodsToBeStatic);
+
+                this.methodsToBeStatic.addAll(toModify);
+
+                return super.visitClassDeclaration(classDecl, executionContext);
+            }
+
+            @Override
+            public J.NewClass visitNewClass(J.NewClass newClass, ExecutionContext executionContext) {
+                if (newClass.getBody() != null) {
+                    List<J.MethodDeclaration> methods = collectNonOverridableMethods(newClass.getBody());
+
+                    List<MethodWithInstanceAccess> noInstanceAccess =
+                            enrichAndFilterWithNoInstanceAccess(methods);
+
+                    List<JavaType.Method> toModify =
+                            filterNonStaticMethodInvocations(noInstanceAccess, this.methodsToBeStatic);
+
+                    this.methodsToBeStatic.addAll(toModify);
+                }
+
+                return super.visitNewClass(newClass, executionContext);
+            }
+
+            private static List<J.MethodDeclaration> collectNonOverridableMethods(J.Block body) {
+                return body
+                        .getStatements()
+                        .stream()
+                        .filter(statement -> statement instanceof J.MethodDeclaration)
+                        .map(J.MethodDeclaration.class::cast)
+                        .filter(md -> !md.hasModifier(J.Modifier.Type.Static))
+                        .filter(md -> md.hasModifier(J.Modifier.Type.Private) || md.hasModifier(J.Modifier.Type.Final))
+                        .filter(md -> !md.isConstructor())
+                        .filter(md -> !isSerializableException(md))
+                        .collect(Collectors.toList());
+
+            }
+
+            private static boolean isSerializableException(J.MethodDeclaration methodDeclaration) {
+                JavaType.Method method = methodDeclaration.getMethodType();
+                if (method != null) {
+                    List<JavaType.FullyQualified> interfaces = method.getDeclaringType().getInterfaces();
+                    return interfaces.stream().anyMatch(i -> i.getFullyQualifiedName().equals("java.io.Serializable")) &&
+                            serializableMethods.stream().anyMatch(matcher -> matcher.matches(method));
+                }
+                return false;
+            }
+
+            private static List<MethodWithInstanceAccess> enrichAndFilterWithNoInstanceAccess(List<J.MethodDeclaration> methods) {
+                // Enriching with AccessInstanceDataVisitor and filtering the ones that have instance access
+                return methods.stream()
+                        .map(md -> new MethodWithInstanceAccess(
+                                        md.getMethodType(),
+                                        AccessInstanceDataVisitor.find(md.getBody())
+                                )
+                        )
+                        .filter(mia -> !mia.instanceAccess.get())
+                        .collect(Collectors.toList());
+            }
+
+            private static List<JavaType.Method> filterNonStaticMethodInvocations(
+                    List<MethodWithInstanceAccess> noInstanceAccess,
+                    Set<JavaType.Method> previousValidMethods
+            ) {
+                int prevSize;
+                do {
+                    // Creating a set with the current potential methods to become static.
+                    Set<JavaType.Method> validMethods = noInstanceAccess
+                            .stream()
+                            .map(mia -> mia.method)
+                            .collect(Collectors.toSet());
+                    // Also adding previous methods from upper scopes
+                    validMethods.addAll(previousValidMethods);
+
+                    // We keep the previous size, to see if we actually removed any methods, and we need to iterate again
+                    prevSize = noInstanceAccess.size();
+                    // We remove all methods that have invocations to methods that won't become static
+                    noInstanceAccess = noInstanceAccess
+                            .stream()
+                            .filter(mia -> validMethods.containsAll(mia.instanceAccess.methodInvocations))
+                            .collect(Collectors.toList());
+                } while (noInstanceAccess.size() < prevSize && noInstanceAccess.size() > 0);
+                // We keep iterating if we removed some methods, to propagate the changes in invocation chains
+
+                return noInstanceAccess.stream()
+                        .map(mia -> mia.method)
+                        .collect(Collectors.toList());
+
+            }
+
             @Override
             public J.MethodDeclaration visitMethodDeclaration(J.MethodDeclaration methodDec, ExecutionContext executionContext) {
                 J.MethodDeclaration methodDeclaration = super.visitMethodDeclaration(methodDec, executionContext);
 
-                // If the method already has a "static" modifier, we don't need to check anything else
-                if (methodDeclaration.hasModifier(J.Modifier.Type.Static)) {
-                    return methodDeclaration;
-                }
-
-                // If the method is a constructor, we cannot make it static
-                if (methodDeclaration.isConstructor()) {
-                    return methodDeclaration;
-                }
-
-                // If it's not private or final, it could be overriden, so we cannot make it static
-                if (!(methodDeclaration.hasModifier(J.Modifier.Type.Private) ||
-                        methodDeclaration.hasModifier(J.Modifier.Type.Final))) {
-                    return methodDeclaration;
-                }
-
-                // We need to check for the exceptions of java.io.Serializable methods
-                JavaType.Method method = methodDeclaration.getMethodType();
-                if (method != null) {
-                    List<JavaType.FullyQualified> interfaces = method.getDeclaringType().getInterfaces();
-                    if (interfaces.stream().anyMatch(i -> i.getFullyQualifiedName().equals("java.io.Serializable")) &&
-                        serializableMethods.stream().anyMatch(matcher -> matcher.matches(method))
-                    ) {
-                        return methodDeclaration;
-                    }
-                }
-
-
-                // At this point we have to check if the body of the method has any access to instance data.
-                // We should always have a body, since private or final methods cannot be abstract, so no need to check that
-                if (!AccessInstanceDataVisitor.find(methodDeclaration.getBody()).get()) {
+                // All the analysis have already been done in the previous visit methods,
+                // Here we just need to check the list of methods to become static and apply the modifier if we found it.
+                if (this.methodsToBeStatic.contains(methodDec.getMethodType())) {
                     methodDeclaration = autoFormat(
                             methodDeclaration.withModifiers(
                                     ListUtils.concat(methodDeclaration.getModifiers(), new J.Modifier(Tree.randomId(), Space.EMPTY, Markers.EMPTY, J.Modifier.Type.Static, Collections.emptyList()))
@@ -84,29 +167,60 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
         };
     }
 
+    // Helper class to encapsulate the returned data of the AccessInstanceDataVisitor.
+    // We have a flag that starts at false, and can only be set up to true.
+    // We also have a list of method invocations to non-static private or final methods, to check later on
+    // Due to the short-circuit that we have on the visitor, if the flag is set to true, the list of method invocations
+    // may be incomplete.
+    private static class InstanceAccess {
+        private boolean instanceAccess = false;
+        private Set<JavaType.Method> methodInvocations = new HashSet<>();
+
+        public void set() {
+            this.instanceAccess = true;
+        }
+
+        public boolean get() {
+            return this.instanceAccess;
+        }
+        public void addMethodInvocation(JavaType.Method method) {
+            this.methodInvocations.add(method);
+        }
+
+        public Set<JavaType.Method> getMethodInvocations() {
+            return this.methodInvocations;
+        }
+    }
+
+
     @Value
     @EqualsAndHashCode(callSuper = true)
-    private static class AccessInstanceDataVisitor extends JavaIsoVisitor<AtomicBoolean> {
+    private static class AccessInstanceDataVisitor extends JavaIsoVisitor<InstanceAccess> {
 
-        static AtomicBoolean find(J.Block body) {
+        static InstanceAccess find(J.Block body) {
             return new AccessInstanceDataVisitor()
-                    .reduce(body, new AtomicBoolean());
+                    .reduce(body, new InstanceAccess());
         }
 
 
         @Override
-        public J.Identifier visitIdentifier(J.Identifier id, AtomicBoolean hasInstanceAccess) {
+        public J.Identifier visitIdentifier(J.Identifier id, InstanceAccess instanceAccess) {
             // Return quickly if we already found an instance access before
-            if (hasInstanceAccess.get()) {
+            if (instanceAccess.get()) {
                 return id;
             }
 
-            J.Identifier identifier = super.visitIdentifier(id, hasInstanceAccess);
+            J.Identifier identifier = super.visitIdentifier(id, instanceAccess);
 
             Cursor parent = getCursor().getParent();
             if (parent != null) {
                 // Discard if the identifier is a NamedVariable
                 if (parent.getValue() instanceof J.VariableDeclarations.NamedVariable) {
+                    return identifier;
+                }
+
+                // Discard if the identifier is a ParametrizedType
+                if (parent.getValue() instanceof J.ParameterizedType) {
                     return identifier;
                 }
 
@@ -149,7 +263,7 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
                 // Thus, no need to check FQN of class.
                 if (fieldType.getOwner() instanceof JavaType.Class) {
                     if (!fieldType.hasFlags(Flag.Static)) {
-                        hasInstanceAccess.set(true);
+                        instanceAccess.set();
                     }
                 }
 
@@ -160,14 +274,15 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
             return identifier;
         }
 
+
         @Override
-        public J.MethodInvocation visitMethodInvocation(J.MethodInvocation mi, AtomicBoolean hasInstanceAccess) {
+        public J.MethodInvocation visitMethodInvocation(J.MethodInvocation mi, InstanceAccess instanceAccess) {
             // Return quickly if we already found an instance access before
-            if (hasInstanceAccess.get()) {
+            if (instanceAccess.get()) {
                 return mi;
             }
 
-            J.MethodInvocation methodInvocation = super.visitMethodInvocation(mi, hasInstanceAccess);
+            J.MethodInvocation methodInvocation = super.visitMethodInvocation(mi, instanceAccess);
 
             // Discard if the target of the invocation is not implicit this.
             // We are taking care of explicit this in visitIdentifier
@@ -176,23 +291,31 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
                 return methodInvocation;
             }
 
-            // Check if it is a method call to non-static member
             JavaType.Method methodType = methodInvocation.getMethodType();
-            if (methodType != null && !methodType.hasFlags(Flag.Static)) {
-                hasInstanceAccess.set(true);
+            if (methodType != null) {
+                // Check if it is a method call to non-static member
+                if (!methodType.hasFlags(Flag.Static)) {
+                    // If it's access to a potential to become static method, we add it to the list of method invocations
+                    if (methodType.hasFlags(Flag.Private) || methodType.hasFlags(Flag.Final)) {
+                        instanceAccess.addMethodInvocation(methodType);
+                    } else { // Otherwise we just set instance access
+                        instanceAccess.set();
+                    }
+
+                }
             }
 
             return methodInvocation;
         }
 
         @Override
-        public J.NewClass visitNewClass(J.NewClass nc, AtomicBoolean hasInstanceAccess) {
+        public J.NewClass visitNewClass(J.NewClass nc, InstanceAccess instanceAccess) {
             // Return quickly if we already found an instance access before
-            if (hasInstanceAccess.get()) {
+            if (instanceAccess.get()) {
                 return nc;
             }
 
-            J.NewClass newClass = super.visitNewClass(nc, hasInstanceAccess);
+            J.NewClass newClass = super.visitNewClass(nc, instanceAccess);
 
             // Discard if we have an enclosing
             // We are taking care of explicit this in visitIdentifier
@@ -207,13 +330,40 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
             JavaType.Class clazz = (JavaType.Class) newClass.getType();
             if (clazz != null && clazz.getOwningClass() != null) {
                 if (!clazz.hasFlags(Flag.Static)) {
-                    hasInstanceAccess.set(true);
+                    instanceAccess.set();
                 }
             }
 
             return newClass;
         }
 
+        @Override
+        public J.MemberReference visitMemberReference(J.MemberReference mr, InstanceAccess instanceAccess) {
+            if (instanceAccess.get()) {
+                return mr;
+            }
+            J.MemberReference memberRef = super.visitMemberReference(mr, instanceAccess);
+
+            if (memberRef.getContaining() instanceof J.Identifier) {
+                J.Identifier id = (J.Identifier) memberRef.getContaining();
+                // On member references, we just care about the specific case where we are accessing through `this::`
+                // Any other member reference is either with static context or to a local parameter or variable.
+                if (id.getSimpleName().equals("this")) {
+                    instanceAccess.set();
+                }
+                // For the special case of `new`, we need to check as in visitNewClass if it's a static nested class
+                else if (memberRef.getReference().getSimpleName().equals("new")) {
+                    JavaType.Class clazz = (JavaType.Class) id.getType();
+                    if (clazz != null && clazz.getOwningClass() != null) {
+                        if (!clazz.hasFlags(Flag.Static)) {
+                            instanceAccess.set();
+                        }
+                    }
+                }
+            }
+
+            return memberRef;
+        }
     }
 
 }
