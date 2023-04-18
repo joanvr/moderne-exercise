@@ -1,4 +1,4 @@
-package io.moderne.receipes;
+package io.moderne.recipes;
 
 import lombok.EqualsAndHashCode;
 import lombok.Value;
@@ -33,11 +33,7 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
     @Override
     public JavaIsoVisitor<ExecutionContext> getVisitor() {
         return new JavaIsoVisitor<ExecutionContext>() {
-            private static final List<MethodMatcher> serializableMethods = List.of(
-                    new MethodMatcher("* writeObject(java.io.ObjectOutputStream)"),
-                    new MethodMatcher("* readObject(java.io.ObjectInputStream)"),
-                    new MethodMatcher("* readObjectNoData()")
-            );
+            private static final List<MethodMatcher> serializableMethods = List.of(new MethodMatcher("* writeObject(java.io.ObjectOutputStream)"), new MethodMatcher("* readObject(java.io.ObjectInputStream)"), new MethodMatcher("* readObjectNoData()"));
 
 
             private Set<JavaType.Method> methodsToBeStatic = new HashSet<>();
@@ -48,18 +44,18 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
                     this.method = method;
                     this.instanceAccess = instanceAccess;
                 }
+
                 public final JavaType.Method method;
                 public final InstanceAccess instanceAccess;
             }
+
             @Override
             public J.ClassDeclaration visitClassDeclaration(J.ClassDeclaration classDecl, ExecutionContext executionContext) {
                 List<J.MethodDeclaration> methods = collectNonOverridableMethods(classDecl.getBody());
 
-                List<MethodWithInstanceAccess> noInstanceAccess =
-                        enrichAndFilterWithNoInstanceAccess(methods);
+                List<MethodWithInstanceAccess> noInstanceAccess = enrichAndFilterWithNoInstanceAccess(methods);
 
-                List<JavaType.Method> toModify =
-                        filterNonStaticMethodInvocations(noInstanceAccess, this.methodsToBeStatic);
+                List<JavaType.Method> toModify = filterNonStaticMethodInvocations(noInstanceAccess, this.methodsToBeStatic);
 
                 this.methodsToBeStatic.addAll(toModify);
 
@@ -71,11 +67,9 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
                 if (newClass.getBody() != null) {
                     List<J.MethodDeclaration> methods = collectNonOverridableMethods(newClass.getBody());
 
-                    List<MethodWithInstanceAccess> noInstanceAccess =
-                            enrichAndFilterWithNoInstanceAccess(methods);
+                    List<MethodWithInstanceAccess> noInstanceAccess = enrichAndFilterWithNoInstanceAccess(methods);
 
-                    List<JavaType.Method> toModify =
-                            filterNonStaticMethodInvocations(noInstanceAccess, this.methodsToBeStatic);
+                    List<JavaType.Method> toModify = filterNonStaticMethodInvocations(noInstanceAccess, this.methodsToBeStatic);
 
                     this.methodsToBeStatic.addAll(toModify);
                 }
@@ -84,8 +78,7 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
             }
 
             private static List<J.MethodDeclaration> collectNonOverridableMethods(J.Block body) {
-                return body
-                        .getStatements()
+                return body.getStatements()
                         .stream()
                         .filter(statement -> statement instanceof J.MethodDeclaration)
                         .map(J.MethodDeclaration.class::cast)
@@ -109,20 +102,14 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
 
             private static List<MethodWithInstanceAccess> enrichAndFilterWithNoInstanceAccess(List<J.MethodDeclaration> methods) {
                 // Enriching with AccessInstanceDataVisitor and filtering the ones that have instance access
-                return methods.stream()
-                        .map(md -> new MethodWithInstanceAccess(
-                                        md.getMethodType(),
-                                        AccessInstanceDataVisitor.find(md.getBody())
-                                )
-                        )
+                return methods
+                        .stream()
+                        .map(md -> new MethodWithInstanceAccess(md.getMethodType(), AccessInstanceDataVisitor.find(md.getBody())))
                         .filter(mia -> !mia.instanceAccess.get())
                         .collect(Collectors.toList());
             }
 
-            private static List<JavaType.Method> filterNonStaticMethodInvocations(
-                    List<MethodWithInstanceAccess> noInstanceAccess,
-                    Set<JavaType.Method> previousValidMethods
-            ) {
+            private static List<JavaType.Method> filterNonStaticMethodInvocations(List<MethodWithInstanceAccess> noInstanceAccess, Set<JavaType.Method> previousValidMethods) {
                 int prevSize;
                 do {
                     // Creating a set with the current potential methods to become static.
@@ -130,6 +117,7 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
                             .stream()
                             .map(mia -> mia.method)
                             .collect(Collectors.toSet());
+
                     // Also adding previous methods from upper scopes
                     validMethods.addAll(previousValidMethods);
 
@@ -140,13 +128,14 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
                             .stream()
                             .filter(mia -> validMethods.containsAll(mia.instanceAccess.methodInvocations))
                             .collect(Collectors.toList());
+
                 } while (noInstanceAccess.size() < prevSize && noInstanceAccess.size() > 0);
                 // We keep iterating if we removed some methods, to propagate the changes in invocation chains
 
-                return noInstanceAccess.stream()
+                return noInstanceAccess
+                        .stream()
                         .map(mia -> mia.method)
                         .collect(Collectors.toList());
-
             }
 
             @Override
@@ -156,10 +145,7 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
                 // All the analysis have already been done in the previous visit methods,
                 // Here we just need to check the list of methods to become static and apply the modifier if we found it.
                 if (this.methodsToBeStatic.contains(methodDec.getMethodType())) {
-                    methodDeclaration = autoFormat(
-                            methodDeclaration.withModifiers(
-                                    ListUtils.concat(methodDeclaration.getModifiers(), new J.Modifier(Tree.randomId(), Space.EMPTY, Markers.EMPTY, J.Modifier.Type.Static, Collections.emptyList()))
-                            ), executionContext);
+                    methodDeclaration = autoFormat(methodDeclaration.withModifiers(ListUtils.concat(methodDeclaration.getModifiers(), new J.Modifier(Tree.randomId(), Space.EMPTY, Markers.EMPTY, J.Modifier.Type.Static, Collections.emptyList()))), executionContext);
                 }
 
                 return methodDeclaration;
@@ -183,6 +169,7 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
         public boolean get() {
             return this.instanceAccess;
         }
+
         public void addMethodInvocation(JavaType.Method method) {
             this.methodInvocations.add(method);
         }
@@ -198,8 +185,7 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipe extends Recipe {
     private static class AccessInstanceDataVisitor extends JavaIsoVisitor<InstanceAccess> {
 
         static InstanceAccess find(J.Block body) {
-            return new AccessInstanceDataVisitor()
-                    .reduce(body, new InstanceAccess());
+            return new AccessInstanceDataVisitor().reduce(body, new InstanceAccess());
         }
 
 

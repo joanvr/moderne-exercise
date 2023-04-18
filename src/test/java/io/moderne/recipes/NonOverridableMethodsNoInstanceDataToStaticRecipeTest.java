@@ -1,6 +1,5 @@
-package io.moderne.recepies;
+package io.moderne.recipes;
 
-import io.moderne.receipes.NonOverridableMethodsNoInstanceDataToStaticRecipe;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.openrewrite.test.RecipeSpec;
@@ -1253,43 +1252,42 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipeTest implements Re
             @Test
             void chainedWithNoInstanceAccess() {
                 rewriteRun(java("""
-                                class A {
-                                    private int test1() {
-                                        return test2();
-                                    }
-                                    
-                                    private int test2() {
-                                        return test3();
-                                    }
-                                    
-                                    private int test3() {
-                                        return test4();
-                                    }
-                                    
-                                    private int test4() {
-                                        return 0;
-                                    }
-                                }
-                                """,
-                        """
-                                class A {
-                                    private static int test1() {
-                                        return test2();
-                                    }
-                                    
-                                    private static int test2() {
-                                        return test3();
-                                    }
-                                    
-                                    private static int test3() {
-                                        return test4();
-                                    }
-                                    
-                                    private static int test4() {
-                                        return 0;
-                                    }
-                                }
-                                """));
+                        class A {
+                            private int test1() {
+                                return test2();
+                            }
+                            
+                            private int test2() {
+                                return test3();
+                            }
+                            
+                            private int test3() {
+                                return test4();
+                            }
+                            
+                            private int test4() {
+                                return 0;
+                            }
+                        }
+                        """, """
+                        class A {
+                            private static int test1() {
+                                return test2();
+                            }
+                            
+                            private static int test2() {
+                                return test3();
+                            }
+                            
+                            private static int test3() {
+                                return test4();
+                            }
+                            
+                            private static int test4() {
+                                return 0;
+                            }
+                        }
+                        """));
 
             }
         }
