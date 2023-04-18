@@ -1,6 +1,5 @@
-package io.moderne.recepies;
+package io.moderne.recipes;
 
-import io.moderne.receipes.NonOverridableMethodsNoInstanceDataToStaticRecipe;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.openrewrite.test.RecipeSpec;
@@ -328,6 +327,64 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipeTest implements Re
         }
 
         @Nested
+        class MethodReference {
+            @Test
+            void methodReferenceWithThis() {
+                rewriteRun(java("""
+                        class A {
+                            public void method(int a) {}
+                                                
+                            private void test() {
+                                Consumer<Integer> m = this::method;
+                            }
+                        }
+                        """));
+            }
+
+            @Test
+            void methodReferenceToFieldMethod() {
+                rewriteRun(java("""
+                        class B {
+                            public void method() {}
+                        }
+                        class A {                                                
+                            private B b = new B();
+                            private void test() {
+                                Runnable me = b::method;
+                            }
+                        }
+                        """));
+            }
+
+            @Test
+            void methodReferenceInvocationWithThis() {
+                rewriteRun(java("""
+                        class A {
+                            public void method() {}
+                            private void test() {
+                                Consumer<A> c = A::method;
+                                c.accept(this);
+                            }
+                        }
+                        """));
+            }
+
+            @Test
+            void methodReferenceToNewInnerClass() {
+                rewriteRun(java("""
+                        public class A {
+                            class B {}
+                            
+                            private void test() {
+                                Runnable r = B::new;
+                            }
+                        }
+                        """));
+            }
+
+        }
+
+        @Nested
         class Inheritance {
             @Test
             void accessToParentField() {
@@ -443,28 +500,25 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipeTest implements Re
                         """));
             }
         }
-        @Nested
-        class Limitations {
-            @Test
-            void selfRecursiveCall() {
-                rewriteRun(java("""
-                        class A {
-                            private int test() {
-                                return test();
-                            }
-                        }
-                        """));
-            }
 
+        @Nested
+        class MethodInvocations {
             @Test
-            void crossRecursiveCalls() {
+            void chainedWithInstanceAccess() {
                 rewriteRun(java("""
                         class A {
+                            private int field = 0;
                             private int test1() {
                                 return test2();
                             }
                             private int test2() {
-                                return test1();
+                                return test3();
+                            }
+                            private int test3() {
+                                return test4();
+                            }
+                            private int test4() {
+                                return field;
                             }
                         }
                         """));
@@ -573,6 +627,106 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipeTest implements Re
                         }      
                         """));
             }
+        }
+
+        @Nested
+        class MethodReference {
+            @Test
+            void methodReferenceToClassReference() {
+                rewriteRun(java("""
+                        class A {
+                            public void method() {}
+                            
+                            private void test() {
+                                Consumer<A> c = A::method;
+                            }
+                        }
+                        """, """
+                        class A {
+                            public void method() {}
+                            
+                            private static void test() {
+                                Consumer<A> c = A::method;
+                            }
+                        }
+                        """));
+            }
+
+            @Test
+            void methodReferenceToNewStaticNestedClass() {
+                rewriteRun(java("""
+                        public class A {
+                            static class B {}
+                            
+                            private void test() {
+                                Runnable r = B::new;
+                            }
+                        }
+                        """, """
+                        public class A {
+                            static class B {}
+                            
+                            private static void test() {
+                                Runnable r = B::new;
+                            }
+                        }
+                        """));
+            }
+
+            @Test
+            void methodReferenceToStaticFieldMethod() {
+                rewriteRun(java("""
+                        class B {
+                            public void method() {}
+                        }
+                        class A {                                                
+                            private static B b = new B();
+                            
+                            private void test() {
+                                Runnable me = b::method;
+                            }
+                        }
+                        """, """
+                        class B {
+                            public void method() {}
+                        }
+                        class A {                                                
+                            private static B b = new B();
+                            
+                            private static void test() {
+                                Runnable me = b::method;
+                            }
+                        }
+                        """));
+            }
+
+            @Test
+            void methodReferenceInvocationWithParameter() {
+                rewriteRun(java("""
+                        import java.util.function.Consumer;
+                                                
+                        class A {
+                            public void method() {}
+                            
+                            private void test(A a) {
+                                Consumer<A> c = A::method;
+                                c.accept(a);
+                            }
+                        }
+                        """, """
+                        import java.util.function.Consumer;
+
+                        class A {
+                            public void method() {}
+                            
+                            private static void test(A a) {
+                                Consumer<A> c = A::method;
+                                c.accept(a);
+                            }
+                        }
+                        """));
+            }
+
         }
 
         @Nested
@@ -1092,5 +1246,127 @@ public class NonOverridableMethodsNoInstanceDataToStaticRecipeTest implements Re
             }
 
         }
+
+        @Nested
+        class MethodInvocations {
+            @Test
+            void chainedWithNoInstanceAccess() {
+                rewriteRun(java("""
+                        class A {
+                            private int test1() {
+                                return test2();
+                            }
+                            
+                            private int test2() {
+                                return test3();
+                            }
+                            
+                            private int test3() {
+                                return test4();
+                            }
+                            
+                            private int test4() {
+                                return 0;
+                            }
+                        }
+                        """, """
+                        class A {
+                            private static int test1() {
+                                return test2();
+                            }
+                            
+                            private static int test2() {
+                                return test3();
+                            }
+                            
+                            private static int test3() {
+                                return test4();
+                            }
+                            
+                            private static int test4() {
+                                return 0;
+                            }
+                        }
+                        """));
+
+            }
+        }
+
+        @Nested
+        class Recursivity {
+            @Test
+            void selfRecursiveCall() {
+                rewriteRun(java("""
+                        class A {
+                            private int test() {
+                                return test();
+                            }
+                        }
+                        """, """
+                        class A {
+                            private static int test() {
+                                return test();
+                            }
+                        }
+                        """));
+            }
+
+            @Test
+            void crossRecursiveCalls() {
+                rewriteRun(java("""
+                        class A {
+                            private int test1() {
+                                return test2();
+                            }
+                            
+                            private int test2() {
+                                return test1();
+                            }
+                        }
+                        """, """
+                        class A {
+                            private static int test1() {
+                                return test2();
+                            }
+                            
+                            private static int test2() {
+                                return test1();
+                            }
+                        }
+                        """));
+            }
+
+            @Test
+            void recursiveCallFromAnonymousClassMethod() {
+                rewriteRun(java("""
+                        class A {
+                            interface I {
+                            }
+                            
+                            private void method() {
+                                I i = new I() {
+                                    private void test() {
+                                        method();
+                                    }
+                                };
+                            }
+                        }
+                        """, """
+                        class A {
+                            interface I {
+                            }
+                            
+                            private static void method() {
+                                I i = new I() {
+                                    private static void test() {
+                                        method();
+                                    }
+                                };
+                            }
+                        }
+                        """));
+            }
+        }
     }
 }
+
